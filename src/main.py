@@ -199,10 +199,13 @@ class DEXAssistant(ctk.CTk):
     # TEXT TO SPEECH
     # --------------------------------------------------
 
+        # --------------------------------------------------
+    # TEXT TO SPEECH
+    # --------------------------------------------------
+
     def speak_text(self, message):
 
         try:
-
             # Remove URLs before speaking
             spoken_text = re.sub(
                 r"https?://\S+",
@@ -212,7 +215,7 @@ class DEXAssistant(ctk.CTk):
 
             # Don't read source links aloud
             spoken_text = re.split(
-                r"\nSources:",
+                r"\n\s*Sources:",
                 spoken_text,
                 maxsplit=1
             )[0]
@@ -225,10 +228,10 @@ class DEXAssistant(ctk.CTk):
             # Keep spoken responses reasonably short
             spoken_text = spoken_text[:1500]
 
-            # macOS built-in voice
+            # Use macOS built-in voice
             subprocess.run(
                 ["say", spoken_text],
-                check=False
+                check=True
             )
 
         except Exception as e:
