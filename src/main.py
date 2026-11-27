@@ -31,7 +31,11 @@ load_dotenv(env_path)
 MODEL_NAME = "gemini-3.5-flash"
 
 SAMPLE_RATE = 16000
-RECORDING_DURATION = 5
+MAX_COMMAND_SECONDS = 6
+SILENCE_SECONDS = 0.65
+START_TIMEOUT_SECONDS = 3
+AUDIO_BLOCK_SECONDS = 0.10
+VOICE_THRESHOLD = 180
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -485,6 +489,15 @@ class DEXAssistant(ctk.CTk):
             "textbox",
             "text box",
             "input",
+            "textarea",
+            "text area",
+            "email field",
+            "name field",
+            "password field",
+            "search input",
+            "search field",
+            "username field",
+            "phone field",
             "link",
             "menu",
             "tab",
@@ -806,6 +819,55 @@ Do not select a similar-looking element when the requested one is unclear.
         )
 
     # --------------------------------------------------
+    # RESPONSIVE VOICE CAPTURE (VOICE ACTIVITY DETECTION)
+    # --------------------------------------------------
+
+    def record_command_audio(self):
+        """Record until a short pause after speech, instead of waiting 5 seconds."""
+        chunks = []
+        speech_started = False
+        silence_time = 0.0
+        elapsed = 0.0
+        block_frames = int(SAMPLE_RATE * AUDIO_BLOCK_SECONDS)
+
+        try:
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=block_frames
+            ) as stream:
+                while not self.stop_event.is_set():
+                    chunk, overflowed = stream.read(block_frames)
+                    chunk = np.asarray(chunk, dtype=np.int16).reshape(-1)
+                    level = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+                    chunks.append(chunk.copy())
+                    elapsed += AUDIO_BLOCK_SECONDS
+
+                    if level >= VOICE_THRESHOLD:
+                        speech_started = True
+                        silence_time = 0.0
+                    elif speech_started:
+                        silence_time += AUDIO_BLOCK_SECONDS
+
+                    if speech_started and silence_time >= SILENCE_SECONDS:
+                        break
+                    if not speech_started and elapsed >= START_TIMEOUT_SECONDS:
+                        return None
+                    if elapsed >= MAX_COMMAND_SECONDS:
+                        break
+
+            if self.stop_event.is_set() or not speech_started:
+                return None
+
+            audio_data = np.concatenate(chunks)
+            return sr.AudioData(audio_data.tobytes(), SAMPLE_RATE, 2)
+
+        except Exception as e:
+            print("Microphone capture error:", repr(e))
+            return None
+
+    # --------------------------------------------------
     # CONTINUOUS VOICE RECOGNITION
     # --------------------------------------------------
 
@@ -817,33 +879,10 @@ Do not select a similar-looking element when the requested one is unclear.
 
             try:
 
-                audio_data = sd.rec(
-                    int(RECORDING_DURATION * SAMPLE_RATE),
-                    samplerate=SAMPLE_RATE,
-                    channels=1,
-                    dtype="int16"
-                )
+                audio = self.record_command_audio()
 
-                sd.wait()
-
-                if self.stop_event.is_set():
-                    break
-
-                # Ignore silence
-                volume = np.sqrt(
-                    np.mean(
-                        audio_data.astype(np.float32) ** 2
-                    )
-                )
-
-                if volume < 120:
+                if audio is None or self.stop_event.is_set():
                     continue
-
-                audio = sr.AudioData(
-                    audio_data.tobytes(),
-                    SAMPLE_RATE,
-                    2
-                )
 
                 audio.get_flac_data = (
                     lambda convert_rate=None, convert_width=None:
@@ -1081,40 +1120,25 @@ Do not select a similar-looking element when the requested one is unclear.
         command = user_text.lower().strip()
         print("DEX DEBUG: Received command:", command)
 
-        target = self.extract_element_target(command)
+        # Confirm/cancel are local actions: check them before any Gemini call.
+        if command in [
+            "cancel click", "cancel the click", "cancel that click",
+            "don't click", "do not click", "cancel"
+        ]:
+            return self.cancel_pending_click()
 
+        if command in [
+            "confirm click", "yes confirm click", "confirm the click",
+            "click the located element"
+        ]:
+            return self.confirm_pending_click()
+
+        # Locate an element on the currently visible screen.
+        target = self.extract_element_target(command)
         print("DEX DEBUG: Detected element:", target)
 
         if target:
-             print("DEX DEBUG: Starting screen element location")
-             return self.locate_screen_element(target)
-
-        # CANCEL PENDING CLICK
-        if command in [
-            "cancel click",
-            "cancel the click",
-            "cancel that click",
-            "don't click",
-            "do not click"
-        ]:
-
-            return self.cancel_pending_click()
-
-        # CONFIRM PENDING CLICK
-        if command in [
-            "confirm click",
-            "yes confirm click",
-            "confirm the click",
-            "click the located element"
-        ]:
-
-            return self.confirm_pending_click()
-
-        # SCREEN-AWARE ELEMENT LOCATION
-        target = self.extract_element_target(command)
-
-        if target:
-
+            print("DEX DEBUG: Starting screen element location")
             return self.locate_screen_element(target)
 
         # EXISTING DESKTOP CONTROL
